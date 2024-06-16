@@ -1,0 +1,215 @@
+---
+title: "EDA - CTA Station Neighborhoods"
+author: "Kabir Jain"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE, message=FALSE}
+library(dplyr)
+library(data.table)
+library(sf)
+library(leaflet)
+library(leafem)
+```
+
+# Exploratory Data Analysis - CTA "El" Stations and their Neighborhoods
+
+This document outlines an exploratory data analysis effort that looks at how Chicago neighborhoods with CTA (Chicago Transit Authority) "El" stations are different from the rest of the City (and each other). To skip to the interesting stuff, use the floating table of contents to skip ahead to the Results section.
+
+## Background and Purpose
+
+The purpose of this analysis is to identify neighborhoods with CTA stations and examine how the demographic and financial characteristics of these neighborhoods differ from the characteristics of the rest of the City. In this analysis, we look at a variety of indicators, including population, racial/ethnic diversity, incomes, rents, home values, mode of transit and propensity to work from home, and type of employment.
+
+This analysis is not meant to identify a causal relationship between the presence of CTA stations and the demographics of the proximate neighbhorhood, so it should not be interpreted as such. Limited by time and data, I was unable to procure reasonable data dating back to before the existence of many CTA stations. This is just one of the reasons this analysis cannot be interpreted as implying causality.
+
+I've lived in Chicago since the summer of 2021 and the CTA buses and trains are my primary mode of transport. In fact, I sold my car within a month of moving to Chicago. As such, many of the relocation decisions I have undertaken in the past few years have been heavily guided by access to public transit. Apartment listings often highlight the ease of access using phrases such as "a short walk to the Addison red line station" or "29, 62, and 146 bus routes right across the street" - evidently, ease of access to public transit is a desirable feature in housing. What does this mean for rents and home values? And how does that, in turn, affect the demographic makeup of the neighborhood? These are the questions I was driven by when performing this analysis.
+
+In the past three years, I've lived in Uptown by the Argyle station, in Lakeview-East by the Addison station, in Chinatown by the Cermak-McCormick Place and Cermak-Chinatown stations, and in Printer's Row by the Harrison and Roosevelt stations. Though nearly all of these are Red Line neighborhoods, there have been vast demographic differences within this small sample of neighborhoods. By using the CTA Stations and Lines as boundaries, this analysis also looks at station and line-level differences.
+
+## Data Sources
+
+Locations of individual CTA stations along with ridership statistics were obtained from the City of Chicago's Open Data portal. The city boundary of Chicago was also obtained from here and was used to subset Census Tracts. Individual stations were manually assigned to each line (red, blue, green, etc.).
+
+Demographic data was obtained from American Community Survey 5-year estimates, from 2010 through 2022. This data was downloaded at the Census Tract level, and Census Tract boundaries were obtained from the Census Bureau's TIGER/Line repository. 
+
+## Methodology
+
+Here are the libraries that need to be loaded to replicate the analysis.
+
+```{r, eval = FALSE}
+library(dplyr)
+library(sf)
+library(data.table)
+library(tidycensus)
+```
+
+First, I took the point-level data detailing the location of each CTA station and created a quarter-mile buffer around each station. The map below shows the quarter-mile buffer around each station. Click on an area to see the name of the corresponding station.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results = FALSE}
+chicago.boundary <- st_read('data/raw/geo/Chicago_Boundary/geo_export_90809ac1-94b0-4a4f-aabc-1cee937223f4.shp') %>%
+  st_transform(crs = 4326)
+cta.points <- st_read('data/raw/geo/CTA_RailStations/CTA_RailStations.shp') %>%
+  st_transform(crs = 4326) %>%
+  st_buffer(402) %>%
+  st_intersection(chicago.boundary)
+```
+
+```{r, echo = FALSE, warning = FALSE, message = FALSE}
+leaflet(options = leafletOptions(zoomSnap = 0.25, zoomDelta = 0.25)) %>%
+  setView(lng = -87.62627527090277, lat = 41.83599657187003, zoom = 10.25) %>%
+  addProviderTiles(providers$Esri.WorldGrayCanvas) %>%
+  addPolygons(
+    data = chicago.boundary,
+    weight = 2,
+    color = "black",
+    opacity = 1,
+    fillOpacity = 0
+  ) %>%
+  addPolygons(
+    data = cta.points,
+    weight = 1,
+    color = "black",
+    fillColor = "lightblue",
+    opacity = 1,
+    fillOpacity = 0.75,
+    popup = paste("Station: ", cta.points$LONGNAME)
+  )
+```
+
+The next step is to intersect these areas with the 2010 and 2020 Census Tract shapefiles. This allows us to use Census Tracts to approximate the area within each of the buffers. We need to do this for both, 2010 and 2020 Census Tracts because the boundaries for Census Tracts changed in 2020. This step ensures we're comparing the same areas across time.
+
+Next, American Community Survey 5-year Estimates were used to obtain data using the Census API through the package **tidycensus**. Sample code to pull identical data for the year 2010 is attached below.
+
+```{r, eval = FALSE}
+#### Defining the variable list
+variable.codes.list <- c(
+  "B01001_001E", ## Total Population
+  "B01002_001E", ## Median Age
+  
+  "B03002_003E", ## Race: White
+  "B03002_004E", ## Race: Black
+  "B03002_005E", ## Race: Native
+  "B03002_006E", ## Race: Asian
+  "B03002_007E", ## Race: AAPI
+  "B03002_008E", ## Race: Other
+  "B03002_009E", ## Race: TwoPlus
+  "B03002_012E", ## Ethnicity: Hispanic
+  
+  "B06009_002E", ## Education: Less than HS
+  "B06009_003E", ## Education: HS
+  "B06009_004E", ## Education: Some College
+  "B06009_005E", ## Education: Bachelors
+  "B06009_006E", ## Education: Masters
+  
+  "B08006_001E", ## Total Workers
+  "B08006_002E", ## Drove
+  "B08006_008E", ## Public Transit
+  "B08006_014E", ## Bike
+  "B08006_015E", ## Walk
+  "B08006_016E", ## Other
+  "B08006_017E", ## WFH Workers
+  
+  "B19013_001E", ## Median HH Income
+  
+  "B25064_001E", ## Median Gross Rent
+  "B25077_001E", ## Median Value
+  
+  "C24050_002E", ## Industry: Agriculture
+  "C24050_003E", ## Industry: Construction
+  "C24050_004E", ## Industry: Manufacturing
+  "C24050_005E", ## Industry: Wholesale Trade
+  "C24050_006E", ## Industry: Retail Trade
+  "C24050_007E", ## Industry: Transportation and Warehousing
+  "C24050_008E", ## Industry: Information
+  "C24050_009E", ## Industry: Finance and Insurance
+  "C24050_010E", ## Industry: Professional Services
+  "C24050_011E", ## Industry: Education and Healthcare
+  "C24050_012E", ## Industry: Arts, Entertainment, Accommodations, Food
+  "C24050_013E", ## Industry: Other Services
+  "C24050_014E"  ## Industry: Public Administration
+)
+
+variable.names.list <- c(
+  
+  "Total.Population",
+  "MedianAge",
+  
+  "RE.White",
+  "RE.Black",
+  "RE.Native",
+  "RE.Asian",
+  "RE.AAPI",
+  "RE.Other",
+  "RE.TwoPlus",
+  "RE.Hispanic",
+  
+  "Edu.LessThanHS",
+  "Edu.HS",
+  "Edu.SomeCollege",
+  "Edu.Bachelors",
+  "Edu.Masters",
+  
+  "Workers.Total",
+  "Workers.Drove",
+  "Workers.PublicTransit",
+  "Workers.Bike",
+  "Workers.Walk",
+  "Workers.Other",
+  "Workers.WFH",
+  
+  "MHHI",
+  
+  "MedianRent",
+  "MedianValue",
+  
+  "Emp.Agriculture",
+  "Emp.Construction",
+  "Emp.Manufacturing",
+  "Emp.Wholesale",
+  "Emp.Retail",
+  "Emp.Warehousing",
+  "Emp.IT",
+  "Emp.Finance",
+  "Emp.Professional",
+  "Emp.EduHealth",
+  "Emp.Arts",
+  "Emp.Other",
+  "Emp.Public"
+)
+
+#### Data Pulls for each year
+## 2010
+census.2010 <- get_acs(
+  geography = 'tract',
+  state = 'IL',
+  variables = variable.codes.list,
+  survey = 'acs5',
+  year = 2010
+) %>%
+  select(-moe) %>%
+  pivot_wider(names_from = variable,
+              values_from = estimate) %>%
+  `colnames<-`(c('GEOID','NAME', variable.names.list)) %>%
+  mutate(Year = 2010)
+```
+
+This data was pulled for each year from 2010 through 2022, and then filtered to only keep Census Tracts that are within the city limits of Chicago.
+
+The data was combined and a left-join was used to add in CTA Ridership data by identifying the Census Tracts that fell within the quarter-mile buffer. Each row in the final panel dataset represented one unique combination of a Census Tract and CTA Station in the specified year. For example, if a particular Census Tract was within two different buffer areas, there would be 26 rows of data for that Census Tract (13 years of data * 2 combinations).
+
+## Summary Statistics
+
+### Demographics and Incomes for CTA Neighborhoods
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results = FALSE}
+
+```
+
+
+### Line-Level Statistics
+
